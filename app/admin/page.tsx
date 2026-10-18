@@ -48,8 +48,8 @@ interface Cake {
 const FOUNDER_MASTER_ID = 'admin';
 const FOUNDER_MASTER_PIN = '9999';
 
-const CLOUDINARY_CLOUD_NAME = 'uk6p3prn';
-const CLOUDINARY_UPLOAD_PRESET = 'ivzbpfxs';
+const CLOUDINARY_CLOUD_NAME : string = 'uk6p3prn';
+const CLOUDINARY_UPLOAD_PRESET : string = 'ivzbpfxs';
 
 export default function BakerAdminDashboard() {
   // Authentication State
