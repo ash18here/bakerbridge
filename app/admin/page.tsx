@@ -20,6 +20,7 @@ import {
   LogOut,
   ShieldAlert,
   KeyRound,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 interface Baker {
@@ -29,6 +30,9 @@ interface Baker {
   whatsapp_number: string;
   bio: string;
   access_pin?: string;
+  cover_url?: string | null;
+  avatar_url?: string | null;
+  is_accepting_orders?: boolean;
 }
 
 interface Cake {
@@ -44,27 +48,33 @@ interface Cake {
   is_active: boolean;
 }
 
-// Change this Master PIN to whatever secret 4-6 digit code you want for yourself
 const FOUNDER_MASTER_ID = 'admin';
 const FOUNDER_MASTER_PIN = '9999';
 
-const CLOUDINARY_CLOUD_NAME : string = 'uk6p3prn';
-const CLOUDINARY_UPLOAD_PRESET : string = 'ivzbpfxs';
+const CLOUDINARY_CLOUD_NAME: string = 'uk6p3prn';
+const CLOUDINARY_UPLOAD_PRESET: string = 'vzbpfxs';
 
 export default function BakerAdminDashboard() {
-  // Authentication State
   const [authRole, setAuthRole] = useState<'none' | 'founder' | 'baker'>('none');
   const [loginId, setLoginId] = useState('');
   const [loginPin, setLoginPin] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // Dashboard Data State
   const [bakers, setBakers] = useState<Baker[]>([]);
   const [selectedBaker, setSelectedBaker] = useState<Baker | null>(null);
   const [cakes, setCakes] = useState<Cake[]>([]);
   const [statusMsg, setStatusMsg] = useState<string>('');
   const [isUploading, setIsUploading] = useState<boolean>(false);
+
+  // Studio Profile & Cover Editor State
+  const [showProfileEditor, setShowProfileEditor] = useState(false);
+  const [editBio, setEditBio] = useState('');
+  const [editWhatsapp, setEditWhatsapp] = useState('');
+  const [editAccepting, setEditAccepting] = useState(true);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   // New Cake Form State
   const [title, setTitle] = useState('');
@@ -83,7 +93,6 @@ export default function BakerAdminDashboard() {
   const [newBio, setNewBio] = useState('Custom Cakes • New Delhi');
   const [newPin, setNewPin] = useState('1234');
 
-  // Restore saved session on page refresh
   useEffect(() => {
     const savedSession = sessionStorage.getItem('bakerbridge_session');
     if (savedSession) {
@@ -104,6 +113,9 @@ export default function BakerAdminDashboard() {
   useEffect(() => {
     if (selectedBaker) {
       loadCakes(selectedBaker.id);
+      setEditBio(selectedBaker.bio || '');
+      setEditWhatsapp(selectedBaker.whatsapp_number || '');
+      setEditAccepting(selectedBaker.is_accepting_orders !== false);
     }
   }, [selectedBaker]);
 
@@ -137,7 +149,6 @@ export default function BakerAdminDashboard() {
     const cleanPin = loginPin.trim();
 
     try {
-      // 1. Check if Founder Master Login
       if (cleanId === FOUNDER_MASTER_ID && cleanPin === FOUNDER_MASTER_PIN) {
         setAuthRole('founder');
         sessionStorage.setItem(
@@ -149,7 +160,6 @@ export default function BakerAdminDashboard() {
         return;
       }
 
-      // 2. Otherwise check Baker Slug + Access PIN in Supabase
       const { data: bakerData, error } = await supabase
         .from('bakers')
         .select('*')
@@ -169,7 +179,6 @@ export default function BakerAdminDashboard() {
         return;
       }
 
-      // Login success for this specific baker
       setBakers([bakerData]);
       setSelectedBaker(bakerData);
       setAuthRole('baker');
@@ -208,15 +217,13 @@ export default function BakerAdminDashboard() {
     setTimeout(() => setStatusMsg(''), 3500);
   }
 
-  // 1. IMAGE COMPRESSOR: Shrinks any 5MB phone photo into a ~140KB WebP file
-  async function compressImage(file: File): Promise<File> {
+  async function compressImage(file: File, maxWidth = 1200): Promise<File> {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = URL.createObjectURL(file);
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 900;
-        const scale = img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
+        const scale = img.width > maxWidth ? maxWidth / img.width : 1;
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
 
@@ -236,14 +243,12 @@ export default function BakerAdminDashboard() {
             }
           },
           'image/webp',
-          0.8
+          0.82
         );
       };
     });
   }
 
-  // 2. VIDEO COMPRESSOR: Uses Cloudinary if configured, otherwise falls back to Supabase
-  // 2. VIDEO COMPRESSOR: Uses Cloudinary if configured, otherwise falls back to Supabase
   async function uploadAndCompressVideoCloudinary(
     file: File,
     fallbackFolder: string
@@ -264,15 +269,12 @@ export default function BakerAdminDashboard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Cloudinary video upload failed');
 
-      // Auto-trim to 5s (du_5), strip audio (ac_none), resize to 480p (w_480), compress (q_auto:eco)
       return data.secure_url.replace(
         '/upload/',
         '/upload/du_5,ac_none,w_480,q_auto:eco,f_mp4/'
       );
     }
 
-    // ⚠️ 3MB RESTRICTION REMOVED. 
-    // If Cloudinary keys are missing, it uploads the raw, uncompressed video straight to Supabase.
     const fileExt = file.name.split('.').pop() || 'mp4';
     const fileName = `${fallbackFolder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${fileExt}`;
 
@@ -286,15 +288,18 @@ export default function BakerAdminDashboard() {
     return data.publicUrl;
   }
 
-  // 3. MASTER MEDIA ROUTER
-  async function uploadMediaFile(file: File, folder: string): Promise<string> {
+  async function uploadMediaFile(
+    file: File,
+    folder: string,
+    maxWidth = 900
+  ): Promise<string> {
     if (file.type.startsWith('video/')) {
       return await uploadAndCompressVideoCloudinary(file, folder);
     }
 
     let fileToUpload = file;
     if (file.type.startsWith('image/')) {
-      fileToUpload = await compressImage(file);
+      fileToUpload = await compressImage(file, maxWidth);
     }
 
     const fileExt = fileToUpload.name.split('.').pop() || 'webp';
@@ -310,6 +315,67 @@ export default function BakerAdminDashboard() {
 
     const { data } = supabase.storage.from('showcase-media').getPublicUrl(fileName);
     return data.publicUrl;
+  }
+
+  // Save Baker Cover Photo, Avatar, Bio, WhatsApp & Oven Status
+  async function handleSaveStudioProfile(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedBaker) return;
+
+    setIsSavingProfile(true);
+    try {
+      let updatedCoverUrl = selectedBaker.cover_url || null;
+      let updatedAvatarUrl = selectedBaker.avatar_url || null;
+
+      if (coverFile) {
+        updatedCoverUrl = await uploadMediaFile(
+          coverFile,
+          `${selectedBaker.slug}-branding`,
+          1400
+        );
+      }
+
+      if (avatarFile) {
+        updatedAvatarUrl = await uploadMediaFile(
+          avatarFile,
+          `${selectedBaker.slug}-branding`,
+          500
+        );
+      }
+
+      const { data, error } = await supabase
+        .from('bakers')
+        .update({
+          bio: editBio.trim(),
+          whatsapp_number: editWhatsapp.replace(/\D/g, ''),
+          cover_url: updatedCoverUrl,
+          avatar_url: updatedAvatarUrl,
+          is_accepting_orders: editAccepting,
+        })
+        .eq('id', selectedBaker.id)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(
+          error.message +
+            ' (Make sure you ran the 1-line SQL command in Supabase to add cover_url & avatar_url!)'
+        );
+      }
+
+      if (data) {
+        setSelectedBaker(data);
+        setBakers((prev) => prev.map((b) => (b.id === data.id ? data : b)));
+        setCoverFile(null);
+        setAvatarFile(null);
+        setShowProfileEditor(false);
+        flashStatus('Studio Cover, Logo & Profile updated!');
+      }
+    } catch (err: any) {
+      alert('Could not update profile: ' + err.message);
+    } finally {
+      setIsSavingProfile(false);
+    }
   }
 
   async function handleCreateBaker(e: React.FormEvent) {
@@ -426,9 +492,6 @@ export default function BakerAdminDashboard() {
     }
   }
 
-  // ------------------------------------------------------------------
-  // VIEW 1: LOGIN SCREEN (If not logged in yet)
-  // ------------------------------------------------------------------
   if (authRole === 'none') {
     return (
       <div className="min-h-screen bg-[#0A0A0B] text-neutral-100 flex flex-col justify-center items-center px-4 antialiased">
@@ -500,20 +563,11 @@ export default function BakerAdminDashboard() {
               <span>{isLoggingIn ? 'Verifying...' : 'Unlock Studio Dashboard'}</span>
             </button>
           </form>
-
-          <div className="mt-6 pt-4 border-t border-white/10 text-[11px] text-neutral-500 space-y-1">
-            <p className="font-semibold text-neutral-400">Demo Credentials:</p>
-            <p>• Baker View: ID <code className="text-rose-400">crumb-and-crust</code> / PIN <code className="text-rose-400">1234</code></p>
-            <p>• Founder God-Mode: ID <code className="text-amber-400">admin</code> / PIN <code className="text-amber-400">9999</code></p>
-          </div>
         </div>
       </div>
     );
   }
 
-  // ------------------------------------------------------------------
-  // VIEW 2: UNLOCKED STUDIO MANAGER (Role-isolated)
-  // ------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-neutral-100 pb-20 antialiased">
       <header className="border-b border-white/10 bg-[#121216] sticky top-0 z-30">
@@ -556,9 +610,9 @@ export default function BakerAdminDashboard() {
           </div>
         )}
 
-        {/* FOUNDER-ONLY PANEL: Switch Bakeries or Onboard New Baker */}
-        {authRole === 'founder' ? (
-          <div className="bg-[#141418] border border-amber-500/30 rounded-2xl p-5 mb-8">
+        {/* FOUNDER-ONLY PANEL */}
+        {authRole === 'founder' && (
+          <div className="bg-[#141418] border border-amber-500/30 rounded-2xl p-5 mb-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-amber-400 block mb-1.5">
@@ -583,7 +637,7 @@ export default function BakerAdminDashboard() {
                   {selectedBaker && (
                     <span className="text-xs bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-neutral-300 flex items-center gap-1.5">
                       <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                      Baker Login ID: <strong className="text-white font-mono">{selectedBaker.slug}</strong> | PIN:{' '}
+                      ID: <strong className="text-white font-mono">{selectedBaker.slug}</strong> | PIN:{' '}
                       <strong className="text-emerald-400 font-mono">
                         {selectedBaker.access_pin || '1234'}
                       </strong>
@@ -678,21 +732,157 @@ export default function BakerAdminDashboard() {
               </form>
             )}
           </div>
-        ) : (
-          /* BAKER-ONLY HEADER BANNER (Isolated to their own shop) */
-          <div className="bg-[#141418] border border-white/10 rounded-2xl p-5 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">
-                ● Verified Baker Session
-              </span>
-              <h1 className="text-xl font-black text-white mt-0.5">
-                {selectedBaker?.business_name}
-              </h1>
-              <p className="text-xs text-neutral-400 mt-0.5">{selectedBaker?.bio}</p>
+        )}
+
+        {/* STUDIO BRANDING, COVER PHOTO & OVEN STATUS PANEL */}
+        {selectedBaker && (
+          <div className="bg-[#141418] border border-white/10 rounded-2xl p-5 mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-14 h-14 rounded-2xl bg-[#0A0A0B] border border-white/15 overflow-hidden flex items-center justify-center shrink-0">
+                  {selectedBaker.avatar_url ? (
+                    <img
+                      src={selectedBaker.avatar_url}
+                      alt={selectedBaker.business_name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-xl font-black text-amber-400">
+                      {selectedBaker.business_name.charAt(0)}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-black text-white">
+                      {selectedBaker.business_name}
+                    </h2>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        selectedBaker.is_accepting_orders !== false
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-amber-500/20 text-amber-300'
+                      }`}
+                    >
+                      {selectedBaker.is_accepting_orders !== false
+                        ? '● Accepting Orders'
+                        : '● Oven Full Today'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-400 mt-0.5">{selectedBaker.bio}</p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowProfileEditor(!showProfileEditor)}
+                className="bg-white/10 hover:bg-white/15 text-white border border-white/10 text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 self-start sm:self-center cursor-pointer"
+              >
+                <ImageIcon className="w-4 h-4 text-rose-400" />
+                <span>
+                  {showProfileEditor
+                    ? 'Close Profile Editor'
+                    : 'Edit Cover Photo, Logo & Status'}
+                </span>
+              </button>
             </div>
-            <div className="text-xs text-neutral-400 bg-[#0A0A0B] border border-white/10 px-3.5 py-2 rounded-xl font-mono">
-              Public Link: <strong className="text-rose-400">/{selectedBaker?.slug}</strong>
-            </div>
+
+            {showProfileEditor && (
+              <form
+                onSubmit={handleSaveStudioProfile}
+                className="mt-5 pt-5 border-t border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-4"
+              >
+                <div>
+                  <label className="text-xs text-neutral-300 font-bold block mb-1.5">
+                    1. Showroom Background Cover Photo
+                  </label>
+                  <label className="flex items-center justify-center gap-2 border border-dashed border-white/20 hover:border-rose-400 rounded-xl p-3.5 cursor-pointer bg-[#0A0A0B]">
+                    <Upload className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span className="text-xs text-neutral-300 truncate">
+                      {coverFile
+                        ? coverFile.name
+                        : 'Upload Wide Banner Image (Auto-WebP)'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setCoverFile(e.target.files?.[0] || null)}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <div>
+                  <label className="text-xs text-neutral-300 font-bold block mb-1.5">
+                    2. Studio Logo / Profile Avatar
+                  </label>
+                  <label className="flex items-center justify-center gap-2 border border-dashed border-white/20 hover:border-amber-400 rounded-xl p-3.5 cursor-pointer bg-[#0A0A0B]">
+                    <Upload className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="text-xs text-neutral-300 truncate">
+                      {avatarFile ? avatarFile.name : 'Upload Square Studio Logo'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setAvatarFile(e.target.files?.[0] || null)}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <div>
+                  <label className="text-xs text-neutral-400 block mb-1">
+                    3. Location & Speciality Bio
+                  </label>
+                  <input
+                    required
+                    value={editBio}
+                    onChange={(e) => setEditBio(e.target.value)}
+                    className="w-full bg-[#0A0A0B] border border-white/15 rounded-xl px-3.5 py-2.5 text-xs text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-neutral-400 block mb-1">
+                    4. WhatsApp Order Number (with 91)
+                  </label>
+                  <input
+                    required
+                    value={editWhatsapp}
+                    onChange={(e) => setEditWhatsapp(e.target.value)}
+                    className="w-full bg-[#0A0A0B] border border-white/15 rounded-xl px-3.5 py-2.5 text-xs text-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={editAccepting}
+                      onChange={(e) => setEditAccepting(e.target.checked)}
+                      className="rounded accent-emerald-500 w-4 h-4"
+                    />
+                    <span className="text-xs font-bold text-emerald-300">
+                      Kitchen Open & Accepting Orders for This Week (Uncheck if booked out today)
+                    </span>
+                  </label>
+
+                  <button
+                    type="submit"
+                    disabled={isSavingProfile}
+                    className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-black text-xs px-5 py-2.5 rounded-xl cursor-pointer flex items-center gap-2"
+                  >
+                    {isSavingProfile ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Saving Studio Branding...</span>
+                      </>
+                    ) : (
+                      <span>Save Cover & Profile</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
 
